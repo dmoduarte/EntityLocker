@@ -116,6 +116,16 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
         return true;
     }
 
+    private boolean escalateEntityLockWithTimeout(long waitTimeoutForGlobalLock, TimeUnit timeUnit) throws InterruptedException {
+        releaseAllEntityLocks();
+
+        boolean locked = globalWriteLock.tryLock(waitTimeoutForGlobalLock, timeUnit);
+
+        threadIsEscalated.set(locked);
+
+        return locked;
+    }
+
     private void releaseAllEntityLocks() {
         long currentThread = Thread.currentThread().getId();
         if (threadEntityGraph.isAssociatedWithEntities(currentThread)) {
@@ -146,6 +156,10 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
     }
 
     private boolean acquireEntityLock(T entityId, long timeoutLock, TimeUnit timeUnit) throws InterruptedException {
+        if (shouldEscalateFromEntityToGlobalLock()) {
+            return escalateEntityLockWithTimeout(timeoutLock, timeUnit);
+        }
+
         long t0 = System.nanoTime();
 
         boolean locked = globalReadLock.tryLock(timeoutLock, timeUnit);
@@ -156,11 +170,17 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
         long elapsedNanos = System.nanoTime() - t0;
         long remainingWaitingTime = getRemaining(timeUnit.toNanos(timeoutLock), elapsedNanos, timeUnit);
 
-        return entityLock.tryLock(entityId, remainingWaitingTime, timeUnit);
+        locked = entityLock.tryLock(entityId, remainingWaitingTime, timeUnit);
+
+        if (locked) {
+            threadEntityGraph.addThreadEntityAssociation(Thread.currentThread().getId(), entityId, true);
+        }
+
+        return locked;
     }
 
     private void releaseEntityLock(T entityId) {
-        if (!threadIsEscalated.get()) {
+        if (Boolean.FALSE.equals(threadIsEscalated.get())) {
             //check first if it is held, since it could have been escalated
             entityLock.unlock(entityId);
             globalReadLock.unlock();

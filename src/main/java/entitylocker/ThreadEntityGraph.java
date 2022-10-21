@@ -9,13 +9,17 @@ import java.util.Set;
 
 /**
  * Represents a graph, where each node is an entity id or a thread id.
- * The goal is to save info of what threads are trying to access a specific entity.
+ * <p>
+ * Each thread can be related to multiple entities and each entity with multiple threads.
+ * <p>
+ * The goal is to save what threads are trying to or has a lock to a specific entity.
  *
  * @param <T> data type of the entity primary key
  */
 class ThreadEntityGraph<T> {
     private final Map<T, Set<Long>> entityThreads = new HashMap<>();
     private final Map<Long, Set<T>> threadEntities = new HashMap<>();
+    private final Set<Long> threadsWithTimeoutLocks = new HashSet<>();
 
     /**
      * @param threadId id of the thread
@@ -23,6 +27,14 @@ class ThreadEntityGraph<T> {
      */
     boolean isAssociatedWithEntities(long threadId) {
         return !threadEntities.getOrDefault(threadId, Collections.emptySet()).isEmpty();
+    }
+
+    /**
+     * @param threadId id of the thread
+     * @return true if the type of lock is with timeout
+     */
+    boolean hasTimeoutLock(long threadId) {
+        return threadsWithTimeoutLocks.contains(threadId);
     }
 
     /**
@@ -48,11 +60,25 @@ class ThreadEntityGraph<T> {
      * @param entityId Id of the entity
      */
     synchronized void addThreadEntityAssociation(long threadId, T entityId) {
+        addThreadEntityAssociation(threadId, entityId, false);
+    }
+
+    /**
+     * Associates a thread with an entity
+     *
+     * @param threadId Id of the thread
+     * @param entityId Id of the entity
+     */
+    synchronized void addThreadEntityAssociation(long threadId, T entityId, boolean hasTimeout) {
         entityThreads.computeIfAbsent(entityId, eId -> new HashSet<>())
                 .add(threadId);
 
         threadEntities.computeIfAbsent(threadId, tId -> new HashSet<>())
                 .add(entityId);
+
+        if (hasTimeout) {
+            threadsWithTimeoutLocks.add(threadId);
+        }
     }
 
     /**
@@ -85,5 +111,7 @@ class ThreadEntityGraph<T> {
         if (entities.isEmpty()) {
             threadEntities.remove(threadId);
         }
+
+        threadsWithTimeoutLocks.remove(threadId);
     }
 }

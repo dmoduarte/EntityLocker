@@ -16,7 +16,7 @@ class DeadLockTests {
     };
 
     @Test
-    void executeWithEntityExclusiveAccess_multipleLockAcquire_shouldBeReentrant() throws InterruptedException {
+    void executeWithEntityExclusiveAccess_multipleLockAcquireBySingleThread_shouldBeReentrant() throws InterruptedException {
         EntityLocker<String> entityLocker = new ReentrantEntityLockerImpl<>();
         AtomicInteger atomicInteger = new AtomicInteger(0);
         entityLocker.executeWithEntityExclusiveAccess("id", () -> {

@@ -24,6 +24,20 @@ class EntityDeadLockCheckerTests {
     }
 
     @Test
+    void checkDeadT2DeadLockedByT1_T1HasTimeout_noDeadLock() {
+        /*
+           T1 -----> [A] ------> [B] (is waiting for T2 to unlock, but with timeout will eventually release the lock)
+           T2 -----> [B] -----------> acquiring 'A'
+         */
+        ThreadEntityGraph<String> threadEntityGraph = new ThreadEntityGraph<>();
+
+        threadEntityGraph.addThreadEntityAssociation(1, "A");
+        threadEntityGraph.addThreadEntityAssociation(1, "B", true);
+        threadEntityGraph.addThreadEntityAssociation(2, "B");
+        Assertions.assertDoesNotThrow(() -> EntityDeadLockChecker.checkForDeadLock(threadEntityGraph, 2, "A"));
+    }
+
+    @Test
     void checkT3DeadLockedByT1_shouldPreventDeadLock() {
         /*
            T1 -----> [A] ------> [C]
@@ -37,7 +51,7 @@ class EntityDeadLockCheckerTests {
         threadEntityGraph.addThreadEntityAssociation(2, "B");
         threadEntityGraph.addThreadEntityAssociation(2, "A");
 
-        EntityDeadLockChecker.checkForDeadLock(threadEntityGraph, 3, "C");
+        Assertions.assertDoesNotThrow(() -> EntityDeadLockChecker.checkForDeadLock(threadEntityGraph, 3, "C"));
 
         threadEntityGraph.addThreadEntityAssociation(3, "C");
 
