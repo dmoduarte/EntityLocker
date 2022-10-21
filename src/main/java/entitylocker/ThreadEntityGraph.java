@@ -19,7 +19,8 @@ import java.util.Set;
 class ThreadEntityGraph<T> {
     private final Map<T, Set<Long>> entityThreads = new HashMap<>();
     private final Map<Long, Set<T>> threadEntities = new HashMap<>();
-    private final Set<Long> threadsWithTimeoutLocks = new HashSet<>();
+    private final Set<T> entitiesLockedWithTimeout = new HashSet<>();
+    private final Set<Long> threadsWithTimeout = new HashSet<>();
 
     /**
      * @param threadId id of the thread
@@ -30,11 +31,12 @@ class ThreadEntityGraph<T> {
     }
 
     /**
+     * @param entityId id of the entity
      * @param threadId id of the thread
      * @return true if the type of lock is with timeout
      */
-    boolean hasTimeoutLock(long threadId) {
-        return threadsWithTimeoutLocks.contains(threadId);
+    boolean hasTimeoutLock(long threadId, T entityId) {
+        return threadsWithTimeout.contains(threadId) && entitiesLockedWithTimeout.contains(entityId);
     }
 
     /**
@@ -77,7 +79,8 @@ class ThreadEntityGraph<T> {
                 .add(entityId);
 
         if (hasTimeout) {
-            threadsWithTimeoutLocks.add(threadId);
+            entitiesLockedWithTimeout.add(entityId);
+            threadsWithTimeout.add(threadId);
         }
     }
 
@@ -112,6 +115,7 @@ class ThreadEntityGraph<T> {
             threadEntities.remove(threadId);
         }
 
-        threadsWithTimeoutLocks.remove(threadId);
+        entitiesLockedWithTimeout.remove(entityId);
+        threadsWithTimeout.remove(threadId);
     }
 }

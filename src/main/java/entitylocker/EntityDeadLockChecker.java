@@ -36,6 +36,7 @@ class EntityDeadLockChecker {
             T entityIdToAcquire
     ) throws DeadLockPreventionException {
         Set<T> entitiesAcquiredByThread = threadEntityGraph.getAssociatedEntities(acquiringThread);
+
         if (entitiesAcquiredByThread.isEmpty()) {
             return;
         }
@@ -50,7 +51,8 @@ class EntityDeadLockChecker {
             Set<Long> associatedThreads = threadEntityGraph.getAssociatedThreads(currentEntityId);
 
             for (Long currentThreadId : associatedThreads) {
-                if (threadEntityGraph.hasTimeoutLock(currentThreadId)) {
+
+                if (threadEntityGraph.hasTimeoutLock(currentThreadId, currentEntityId)) {
                     //threads with timeout locks are not taken into account as they will eventually release the lock
                     continue;
                 }
