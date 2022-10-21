@@ -21,7 +21,7 @@ public interface EntityLocker<T> {
 
     /**
      * Executed protected code with exclusive access to the entity, will time out if the thread did not acquire
-     * the locked within the specified waitLockTimeout
+     * the lock within the specified waitLockTimeout
      *
      * @param entityId Id of the entity
      * @param protectedCode protected code to be executed

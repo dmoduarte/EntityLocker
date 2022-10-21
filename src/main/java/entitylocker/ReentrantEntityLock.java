@@ -5,17 +5,40 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 
+/**
+ * Wrapper of a concurrent hash map, has the locks acquired at entity level
+ *
+ * @param <T> data type of the entity id
+ */
 class ReentrantEntityLock<T> {
     private final Map<T, ReentrantLock> entityLocks = new ConcurrentHashMap<>();
 
+    /**
+     * Locks the entity
+     *
+     * @param entityId Id of the entity
+     */
     void lock(T entityId) {
         acquireLockAndUpdateMapAtomically(entityId);
     }
 
-    boolean tryLock(T entityId, long timeout, TimeUnit timeUnit) {
-        return acquireLockAndUpdateMapAtomically(entityId, timeUnit, timeout);
+    /**
+     * Tries to acquire the lock at the entity, will time out if the thread did not acquire
+     * the lock within the specified waitLockTimeout
+     *
+     * @param entityId        Id of the entity
+     * @param waitLockTimeout max time to wait for the lock
+     * @param timeUnit        time unit
+     * @return true if the lock was acquired and the protected code executed, false otherwise
+     */
+    boolean tryLock(T entityId, long waitLockTimeout, TimeUnit timeUnit) {
+        return acquireLockAndUpdateMapAtomically(entityId, waitLockTimeout, timeUnit);
     }
 
+    /**
+     * @param entityId id of the entity
+     * @return the number of holds in this lock by the current thread
+     */
     int getHoldCount(T entityId) {
         ReentrantLock entityLock = entityLocks.get(entityId);
 
@@ -26,6 +49,10 @@ class ReentrantEntityLock<T> {
         return entityLock.getHoldCount();
     }
 
+    /**
+     * Releases the lock on the entity
+     * @param entityId id of the entity
+     */
     void unlock(T entityId) {
         ReentrantLock entityLock = entityLocks.get(entityId);
 
@@ -40,7 +67,7 @@ class ReentrantEntityLock<T> {
         }
     }
 
-    void acquireLockAndUpdateMapAtomically(T entityId) {
+    private void acquireLockAndUpdateMapAtomically(T entityId) {
         entityLocks.compute(entityId, (eId, existingLock) -> {
             if (existingLock == null) {
                 ReentrantLock newLock = new ReentrantLock();
@@ -54,7 +81,7 @@ class ReentrantEntityLock<T> {
         });
     }
 
-    boolean acquireLockAndUpdateMapAtomically(T entityId, TimeUnit timeUnit, long timeout) {
+    private boolean acquireLockAndUpdateMapAtomically(T entityId, long timeout, TimeUnit timeUnit) {
         ReentrantLock newOrExistingLock = entityLocks.compute(entityId, (eId, existingLock) -> {
             try {
                 if (existingLock == null) {
