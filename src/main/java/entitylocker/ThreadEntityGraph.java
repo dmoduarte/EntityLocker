@@ -9,12 +9,12 @@ import java.util.Set;
 
 /**
  * Represents a graph, where each node is an entity id or a thread id.
- * The goal is to save info of what entities the thread is locking and what thread is locking a specific entity.
- * An entity can be locked by one thread but one thread can lock many entities.
+ * The goal is to save info of what threads are trying to access a specific entity.
+ *
  * @param <T> data type of the entity primary key
  */
 class ThreadEntityGraph<T> {
-    private final Map<T, Long> entityThreads = new HashMap<>();
+    private final Map<T, Set<Long>> entityThreads = new HashMap<>();
     private final Map<Long, Set<T>> threadEntities = new HashMap<>();
 
     /**
@@ -35,10 +35,10 @@ class ThreadEntityGraph<T> {
 
     /**
      * @param entityId id of the entity
-     * @return thread id associated with the entity
+     * @return associated threads of an entity
      */
-    Optional<Long> getAssociatedThread(T entityId) {
-        return Optional.ofNullable(entityThreads.get(entityId));
+    Set<Long> getAssociatedThreads(T entityId) {
+        return entityThreads.getOrDefault(entityId, Collections.emptySet());
     }
 
     /**
@@ -48,7 +48,9 @@ class ThreadEntityGraph<T> {
      * @param entityId Id of the entity
      */
     synchronized void addThreadEntityAssociation(long threadId, T entityId) {
-        entityThreads.put(entityId, threadId);
+        entityThreads.computeIfAbsent(entityId, eId -> new HashSet<>())
+                .add(threadId);
+
         threadEntities.computeIfAbsent(threadId, tId -> new HashSet<>())
                 .add(entityId);
     }
@@ -58,14 +60,29 @@ class ThreadEntityGraph<T> {
      *
      * @param entityId Id of the entity
      */
-    synchronized void removeEntityThreadAssociation(T entityId) {
+    synchronized void removeEntityThreadAssociation(long threadId, T entityId) {
         if (!entityThreads.containsKey(entityId)) {
             return;
         }
 
-        long threadId = entityThreads.remove(entityId);
-        threadEntities.get(threadId).remove(entityId);
-        if (threadEntities.get(threadId).isEmpty()) {
+        if (!threadEntities.containsKey(threadId)) {
+            return;
+        }
+
+        Set<Long> threads = Optional.ofNullable(entityThreads.get(entityId))
+                .orElseGet(Collections::emptySet);
+
+        Set<T> entities = Optional.ofNullable(threadEntities.get(threadId))
+                .orElseGet(Collections::emptySet);
+
+        threads.remove(threadId);
+        entities.remove(entityId);
+
+        if (threads.isEmpty()) {
+            entityThreads.remove(entityId);
+        }
+
+        if (entities.isEmpty()) {
             threadEntities.remove(threadId);
         }
     }

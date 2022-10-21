@@ -16,16 +16,6 @@ class ReentrantEntityLock<T> {
         return acquireLockAndUpdateMapAtomically(entityId, timeUnit, timeout);
     }
 
-    boolean isHeldByCurrentThread(T entityId) {
-        ReentrantLock entityLock = entityLocks.get(entityId);
-
-        if (entityLock == null) {
-            return false;
-        }
-
-        return entityLock.isHeldByCurrentThread();
-    }
-
     int getHoldCount(T entityId) {
         ReentrantLock entityLock = entityLocks.get(entityId);
 

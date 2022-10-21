@@ -89,13 +89,13 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
     }
 
     private void acquireEntityLock(T entityId) throws DeadLockPreventionException {
-        long currentThreadId = Thread.currentThread().getId();
-
-        EntityDeadLockChecker.checkForDeadLock(threadEntityGraph, currentThreadId, entityId);
-
         if (escalateEntityLockIfNecessary()) {
             return;
         }
+
+        long currentThreadId = Thread.currentThread().getId();
+
+        EntityDeadLockChecker.checkForDeadLock(threadEntityGraph, currentThreadId, entityId);
 
         threadEntityGraph.addThreadEntityAssociation(currentThreadId, entityId);
 
@@ -165,7 +165,7 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
             entityLock.unlock(entityId);
             globalReadLock.unlock();
             if (entityLock.getHoldCount(entityId) == 0) {
-                threadEntityGraph.removeEntityThreadAssociation(entityId);
+                threadEntityGraph.removeEntityThreadAssociation(Thread.currentThread().getId(), entityId);
             }
 
             threadIsEscalated.remove();
