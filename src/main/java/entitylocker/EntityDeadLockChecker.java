@@ -52,11 +52,6 @@ class EntityDeadLockChecker {
 
             for (Long currentThreadId : associatedThreads) {
 
-                if (threadEntityGraph.hasTimeoutLock(currentThreadId, currentEntityId)) {
-                    //threads with timeout locks are not taken into account as they will eventually release the lock
-                    continue;
-                }
-
                 if (currentEntityId == entityIdToAcquire && currentThreadId != acquiringThread) {
                     throw new DeadLockPreventionException();
                 }

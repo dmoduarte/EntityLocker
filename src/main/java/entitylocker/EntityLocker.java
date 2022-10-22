@@ -37,8 +37,9 @@ public interface EntityLocker<T> {
      *
      * @param protectedCode protected code to be executed
      * @throws DeadLockPreventionException in case of possible deadlock detection detected in the internal locks
+     * @throws InterruptedException if thread was interrupted
      */
-    void executeWithGlobalExclusiveAccess(Runnable protectedCode);
+    void executeWithGlobalExclusiveAccess(Runnable protectedCode) throws InterruptedException;
 
     /**
      * Executed protected code with global exclusive access, will time out if the thread did not acquire

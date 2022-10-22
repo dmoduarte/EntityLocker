@@ -5,16 +5,24 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class TimeoutTests {
+
+    private EntityLocker<Long> entityLocker;
+
+    @BeforeEach
+    void setup() {
+        entityLocker = new ReentrantEntityLockerImpl<>();
+    }
+
     @Test
     void executeWithEntityExclusiveAccess_withTimeoutSetting_shouldTimeoutAfter50Ms() throws InterruptedException {
-        EntityLocker<Long> entityLocker = new ReentrantEntityLockerImpl<>();
-
         int numberOfThreads = 2;
         ExecutorService service = Executors.newFixedThreadPool(10);
         CountDownLatch latch = new CountDownLatch(numberOfThreads);
@@ -54,7 +62,6 @@ class TimeoutTests {
 
     @Test
     void executeWithGlobalExclusiveAccess_withTimeoutSetting_shouldTimeoutAfter50Ms() throws InterruptedException {
-        EntityLocker<Long> entityLocker = new ReentrantEntityLockerImpl<>();
         int numberOfThreads = 2;
         ExecutorService service = Executors.newFixedThreadPool(10);
         CountDownLatch latch = new CountDownLatch(numberOfThreads);
@@ -93,8 +100,6 @@ class TimeoutTests {
 
     @Test
     void executeWithGlobalAndEntityExclusiveAccess_withTimeoutSetting_shouldTimeoutAfter50Ms() throws InterruptedException {
-        EntityLocker<Long> entityLocker = new ReentrantEntityLockerImpl<>();
-
         CountDownLatch latch = new CountDownLatch(1);
         AtomicBoolean acquiredLock = new AtomicBoolean(true);
 
@@ -108,7 +113,7 @@ class TimeoutTests {
 
         Runnable globalTask = () -> {
             latch.countDown();
-            entityLocker.executeWithGlobalExclusiveAccess(protectedSleepyCode);
+            executeWithGlobalExclusiveAccess(protectedSleepyCode);
         };
 
         Runnable entityTask = () -> {
@@ -130,6 +135,14 @@ class TimeoutTests {
         thread2.join();
 
         assertFalse(acquiredLock.get());
+    }
+
+    private void executeWithGlobalExclusiveAccess(Runnable runnable) {
+        try {
+            entityLocker.executeWithGlobalExclusiveAccess(runnable);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
 }
