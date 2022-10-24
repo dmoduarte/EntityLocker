@@ -1,6 +1,7 @@
 package entitylocker;
 
 import entitylocker.exceptions.DeadLockPreventionException;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Condition;
@@ -21,7 +22,7 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
     private final ReentrantReadWriteLock.ReadLock globalReadLock = globalLock.readLock();
     private final ThreadEntityGraph<T> threadEntityGraph = new ThreadEntityGraph<>();
 
-    private final ThreadLocal<LockEscalation> currentThreadLockEscalation = ThreadLocal.withInitial(LockEscalation::noEscalation);
+    private final ThreadLocal<LockEscalation> currentThreadLockEscalation = ThreadLocal.withInitial(() -> null);
     private final AtomicLong escalatingThreadsCount = new AtomicLong(0L);
     private final Condition escalatingThreadsCondition = globalWriteLock.newCondition();
 
@@ -88,7 +89,7 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
 
     private void acquireEntityLock(T entityId) throws DeadLockPreventionException {
         if (currentThreadHasLockedManyEntities()) {
-            escalateCurrentThreadLocks(LockEscalation.escalateDueToMultipleEntityLock());
+            escalateCurrentThreadLocks(LockEscalation.MANY_ENTITIES);
             return;
         }
 
@@ -105,7 +106,7 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
 
     private boolean acquireEntityLock(T entityId, long timeoutLock, TimeUnit timeUnit) throws InterruptedException {
         if (currentThreadHasLockedManyEntities()) {
-            return escalateCurrentThreadWithTimeout(timeoutLock, timeUnit, LockEscalation.escalateDueToMultipleEntityLock());
+            return escalateCurrentThreadWithTimeout(timeoutLock, timeUnit, LockEscalation.MANY_ENTITIES);
         }
 
         long t0 = System.nanoTime();
@@ -129,7 +130,7 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
     }
 
     private void escalateCurrentThreadLocks(LockEscalation lockEscalation) {
-        if (currentThreadLockIsEscalated()) {
+        if (currentThreadIsEscalated()) {
             globalWriteLock.lock();
             updateCurrentThreadEscalation(lockEscalation);
             return;
@@ -144,11 +145,11 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
         //If this Thread current protected code is a sub-protected code, parent protected code(s) are escalated as well
         escalateParentProtectedCodes();
         currentThreadLockEscalation.set(lockEscalation);
-        finishGlobalEscalation();
+        finishEscalation();
     }
 
     private boolean escalateCurrentThreadWithTimeout(long waitTimeoutForGlobalLock, TimeUnit timeUnit, LockEscalation lockEscalation) throws InterruptedException {
-        if (currentThreadLockIsEscalated()) {
+        if (currentThreadIsEscalated()) {
             globalWriteLock.lock();
             updateCurrentThreadEscalation(lockEscalation);
             return true;
@@ -163,20 +164,20 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
         if (!locked) {
             //escalation timed out so re-acquire previous lock level
             reAcquireAllReadLocks();
-            finishGlobalEscalation();
+            finishEscalation();
             return false;
         }
 
         //If this Thread current protected code is a sub-protected code, parent protected code(s) are escalated as well
         escalateParentProtectedCodes();
         currentThreadLockEscalation.set(lockEscalation);
-        finishGlobalEscalation();
+        finishEscalation();
 
         return true;
     }
 
     private void releaseEntityLock(T entityId) {
-        boolean shouldReleaseGlobalWriteLock = currentThreadLockIsEscalated() && !currentThreadLockIsEscalatedTemporarily();
+        boolean shouldReleaseGlobalWriteLock = currentThreadLockIsEscalatedDueToManyEntityLock();
         if (shouldReleaseGlobalWriteLock) {
             //if was escalated, release write lock
             globalWriteLock.unlock();
@@ -207,7 +208,7 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
 
              De-escalation should happen when this current global write lock is unlocked
              */
-            escalateCurrentThreadLocks(LockEscalation.temporaryEscalation());
+            escalateCurrentThreadLocks(LockEscalation.TEMPORARY);
             return;
         }
 
@@ -226,7 +227,7 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
 
              De-escalation should happen once this current global write lock is unlocked
              */
-            return escalateCurrentThreadWithTimeout(waitLockTimeout, timeUnit, LockEscalation.temporaryEscalation());
+            return escalateCurrentThreadWithTimeout(waitLockTimeout, timeUnit, LockEscalation.TEMPORARY);
         }
 
         boolean locked = globalWriteLock.tryLock(waitLockTimeout, timeUnit);
@@ -261,10 +262,7 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
     }
 
     private void updateCurrentThreadEscalation(LockEscalation newLockEscalation) {
-        boolean shouldOverride = currentThreadLockEscalation.get().isEscalatedTemporarily()
-                && newLockEscalation.isEscalated()
-                && !newLockEscalation.isEscalatedTemporarily();
-
+        boolean shouldOverride = currentThreadLockIsEscalatedTemporarily() && newLockEscalation == LockEscalation.MANY_ENTITIES;
         if (shouldOverride) {
             currentThreadLockEscalation.set(newLockEscalation);
         }
@@ -293,12 +291,20 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
                 .forEach(i -> globalReadLock.lock());
     }
 
-    private boolean currentThreadLockIsEscalated() {
-        return currentThreadLockEscalation.get().isEscalated();
+    private boolean currentThreadLockIsEscalatedDueToManyEntityLock() {
+        return Optional.ofNullable(currentThreadLockEscalation.get())
+                .map(l -> l == LockEscalation.MANY_ENTITIES)
+                .orElse(Boolean.FALSE);
     }
 
     private boolean currentThreadLockIsEscalatedTemporarily() {
-        return currentThreadLockEscalation.get().isEscalatedTemporarily();
+        return Optional.ofNullable(currentThreadLockEscalation.get())
+                .map(l -> l == LockEscalation.TEMPORARY)
+                .orElse(Boolean.FALSE);
+    }
+
+    private boolean currentThreadIsEscalated() {
+        return currentThreadLockIsEscalatedDueToManyEntityLock() || currentThreadLockIsEscalatedTemporarily();
     }
 
     private void deEscalateToReadLock() {
@@ -307,7 +313,7 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
         currentThreadLockEscalation.remove();
     }
 
-    private void finishGlobalEscalation() {
+    private void finishEscalation() {
         escalatingThreadsCount.decrementAndGet();
         escalatingThreadsCondition.signalAll();
     }
@@ -321,9 +327,17 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
 
     /**
      * Has information on whether current thread lock has been escalated or not
+     * And in case it is escalated, if it is a temporary escalation or was because of many entity lock acquisition
+     */
+    private enum LockEscalation {
+        MANY_ENTITIES, TEMPORARY
+    }
+
+    /**
+     * Has information on whether current thread lock has been escalated or not
      * And in case it is escalated, if it is a temporary escalation or not
      */
-    private static class LockEscalation {
+   /* private static class LockEscalation {
         private final boolean isEscalated;
         private final boolean isTemporary;
 
@@ -351,5 +365,5 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
         private boolean isEscalatedTemporarily() {
             return isEscalated && isTemporary;
         }
-    }
+    }*/
 }
