@@ -332,38 +332,4 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
     private enum LockEscalation {
         MANY_ENTITIES, TEMPORARY
     }
-
-    /**
-     * Has information on whether current thread lock has been escalated or not
-     * And in case it is escalated, if it is a temporary escalation or not
-     */
-   /* private static class LockEscalation {
-        private final boolean isEscalated;
-        private final boolean isTemporary;
-
-        private LockEscalation(boolean isEscalated, boolean isTemporary) {
-            this.isEscalated = isEscalated;
-            this.isTemporary = isTemporary;
-        }
-
-        private static LockEscalation escalateDueToMultipleEntityLock() {
-            return new LockEscalation(true, false);
-        }
-
-        private static LockEscalation temporaryEscalation() {
-            return new LockEscalation(true, true);
-        }
-
-        private static LockEscalation noEscalation() {
-            return new LockEscalation(false, false);
-        }
-
-        private boolean isEscalated() {
-            return isEscalated;
-        }
-
-        private boolean isEscalatedTemporarily() {
-            return isEscalated && isTemporary;
-        }
-    }*/
 }
