@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 
 class EscalationTests {
 
-    private static final Runnable NO_OP = () -> {
+    private static final ProtectedCode NO_OP = () -> {
     };
 
     @Test
@@ -17,10 +17,10 @@ class EscalationTests {
 
         CountDownLatch latch = new CountDownLatch(1);
 
-        Runnable firstRunnable =
+        Runnable runnableWithNestedLocks =
                 () -> entityLocker.executeWithEntityExclusiveAccess(1,
                         () -> entityLocker.executeWithEntityExclusiveAccess(2,
-                                () -> entityLocker.executeWithEntityExclusiveAccess(3, executeSlowTask(latch))
+                                () -> entityLocker.executeWithEntityExclusiveAccess(3, slowTask(latch))
                         )
                 );
 
@@ -33,7 +33,7 @@ class EscalationTests {
             }
         };
 
-        Thread thread1 = new Thread(firstRunnable);
+        Thread thread1 = new Thread(runnableWithNestedLocks);
         Thread thread2 = new Thread(secondRunnable);
 
         thread1.start();
@@ -53,10 +53,10 @@ class EscalationTests {
 
         CountDownLatch latch = new CountDownLatch(1);
 
-        Runnable firstRunnable = () -> {
+        Runnable runnableWithNestedLocks = () -> {
             executeWithEntityLockAndWithLockTimeout(entityLocker, 1,
                     () -> executeWithEntityLockAndWithLockTimeout(entityLocker, 2,
-                            () -> executeWithEntityLockAndWithLockTimeout(entityLocker, 3, executeSlowTask(latch))
+                            () -> executeWithEntityLockAndWithLockTimeout(entityLocker, 3, slowTask(latch))
                     )
             );
         };
@@ -70,7 +70,7 @@ class EscalationTests {
             }
         };
 
-        Thread thread1 = new Thread(firstRunnable);
+        Thread thread1 = new Thread(runnableWithNestedLocks);
         Thread thread2 = new Thread(secondRunnable);
 
         thread1.start();
@@ -83,7 +83,86 @@ class EscalationTests {
         Assertions.assertFalse(acquiredLock.get());
     }
 
-    private Runnable executeSlowTask(CountDownLatch latch) {
+    @Test
+    void executeWithEntityAndGlobalLock_multipleDistinctEntityLocksWithTimeoutWithinSameThread_entityLockLevelShouldEscalate() throws InterruptedException {
+        EntityLocker<Integer> entityLocker = new ReentrantEntityLockerImpl<>(2);
+
+        CountDownLatch latch = new CountDownLatch(1);
+
+        Runnable runnableWithNestedLocks = () -> {
+            executeWithEntityLockAndWithLockTimeout(entityLocker, 1,
+                    () -> executeWithEntityLockAndWithLockTimeout(entityLocker, 2,
+                            () -> executeWithEntityLockAndWithLockTimeout(entityLocker, 3,
+                                    () -> executeWithGlobalLock(entityLocker, slowTask(latch)))
+                    )
+            );
+        };
+
+        AtomicBoolean acquiredLock = new AtomicBoolean(true);
+        Runnable secondRunnable = () -> {
+            try {
+                acquiredLock.set(entityLocker.executeWithEntityExclusiveAccess(4, NO_OP, 10, TimeUnit.MILLISECONDS));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+
+        Thread thread1 = new Thread(runnableWithNestedLocks);
+        Thread thread2 = new Thread(secondRunnable);
+
+        thread1.start();
+        latch.await();
+        thread2.start();
+
+        thread1.join();
+        thread2.join();
+
+        Assertions.assertFalse(acquiredLock.get());
+    }
+
+    @Test
+    void executeWithGlobalAndEntityLock_multipleDistinctEntityLocksWithinSameThread_entityLockLevelShouldEscalate() throws InterruptedException {
+        EntityLocker<Integer> entityLocker = new ReentrantEntityLockerImpl<>(2);
+
+        CountDownLatch latch = new CountDownLatch(1);
+
+        Runnable runnableWithNestedLocks = () -> {
+            entityLocker.executeWithEntityExclusiveAccess( 1,
+                    () -> {
+                        entityLocker.executeWithEntityExclusiveAccess( 2,
+                                () -> executeWithGlobalLock(entityLocker,
+                                        () -> entityLocker.executeWithEntityExclusiveAccess(3, () -> {}))
+                        );
+
+                        //still escalated
+                        slowTask(latch).run();
+                    }
+            );
+        };
+
+        AtomicBoolean acquiredLock = new AtomicBoolean(true);
+        Runnable secondRunnable = () -> {
+            try {
+                acquiredLock.set(entityLocker.executeWithEntityExclusiveAccess(4, NO_OP, 10, TimeUnit.MILLISECONDS));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+
+        Thread thread1 = new Thread(runnableWithNestedLocks);
+        Thread thread2 = new Thread(secondRunnable);
+
+        thread1.start();
+        latch.await();
+        thread2.start();
+
+        thread1.join();
+        thread2.join();
+
+        Assertions.assertFalse(acquiredLock.get());
+    }
+
+    private ProtectedCode slowTask(CountDownLatch latch) {
         return () -> {
             try {
                 latch.countDown();
@@ -94,9 +173,17 @@ class EscalationTests {
         };
     }
 
-    private void executeWithEntityLockAndWithLockTimeout(EntityLocker<Integer> entityLocker, int entityId, Runnable runnable) {
+    private void executeWithGlobalLock(EntityLocker<Integer> entityLocker, ProtectedCode protectedCode) {
         try {
-            entityLocker.executeWithEntityExclusiveAccess(entityId, runnable, 5, TimeUnit.MILLISECONDS);
+            entityLocker.executeWithGlobalExclusiveAccess(protectedCode);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void executeWithEntityLockAndWithLockTimeout(EntityLocker<Integer> entityLocker, int entityId, ProtectedCode protectedCode) {
+        try {
+            entityLocker.executeWithEntityExclusiveAccess(entityId, protectedCode, 5, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

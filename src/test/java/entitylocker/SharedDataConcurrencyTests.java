@@ -28,7 +28,7 @@ class SharedDataConcurrencyTests {
         int numberOfThreads = 3;
         CountDownLatch latch = new CountDownLatch(numberOfThreads);
 
-        Runnable protectedCode = () -> {
+        ProtectedCode protectedCode = () -> {
             try {
                 counter.increment();
             } catch (InterruptedException e) {
@@ -48,7 +48,7 @@ class SharedDataConcurrencyTests {
         int numberOfThreads = 3;
         CountDownLatch latch = new CountDownLatch(numberOfThreads);
 
-        Runnable protectedCode = () -> {
+        ProtectedCode protectedCode = () -> {
             try {
                 counter.increment();
             } catch (InterruptedException e) {
@@ -76,7 +76,7 @@ class SharedDataConcurrencyTests {
         int numberOfThreads = 3;
         CountDownLatch latch = new CountDownLatch(numberOfThreads);
 
-        Runnable protectedCode = () -> {
+        ProtectedCode protectedCode = () -> {
             try {
                 counter.increment();
             } catch (InterruptedException e) {
@@ -104,7 +104,7 @@ class SharedDataConcurrencyTests {
         int numberOfThreads = 3;
         CountDownLatch latch = new CountDownLatch(numberOfThreads);
 
-        Runnable protectedCode = () -> {
+        ProtectedCode protectedCode = () -> {
             try {
                 counter.increment();
             } catch (InterruptedException e) {
@@ -131,7 +131,7 @@ class SharedDataConcurrencyTests {
     void executeWithEntityAndGlobalExclusiveAccess_incrementCounterWithConcurrency_valueShouldBeConsistent() throws InterruptedException {
         CountDownLatch latch = new CountDownLatch(2);
 
-        Runnable protectedCode = () -> {
+        ProtectedCode protectedCode = () -> {
             try {
                 counter.increment();
             } catch (InterruptedException e) {

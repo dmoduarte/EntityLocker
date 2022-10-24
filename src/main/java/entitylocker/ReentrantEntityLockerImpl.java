@@ -1,7 +1,6 @@
 package entitylocker;
 
 import entitylocker.exceptions.DeadLockPreventionException;
-import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Condition;
@@ -22,7 +21,7 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
     private final ReentrantReadWriteLock.ReadLock globalReadLock = globalLock.readLock();
     private final ThreadEntityGraph<T> threadEntityGraph = new ThreadEntityGraph<>();
 
-    private final ThreadLocal<Boolean> threadIsEscalated = ThreadLocal.withInitial(() -> Boolean.FALSE);
+    private final ThreadLocal<LockEscalation> currentThreadLockEscalation = ThreadLocal.withInitial(LockEscalation::noEscalation);
     private final AtomicLong escalatingThreadsCount = new AtomicLong(0L);
     private final Condition escalatingThreadsCondition = globalWriteLock.newCondition();
 
@@ -37,7 +36,7 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
     }
 
     @Override
-    public void executeWithEntityExclusiveAccess(T entityId, Runnable protectedCode) throws DeadLockPreventionException {
+    public void executeWithEntityExclusiveAccess(T entityId, ProtectedCode protectedCode) throws DeadLockPreventionException {
         acquireEntityLock(entityId);
 
         try {
@@ -48,7 +47,7 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
     }
 
     @Override
-    public boolean executeWithEntityExclusiveAccess(T entityId, Runnable protectedCode, long waitLockTimeout, TimeUnit timeUnit) throws InterruptedException {
+    public boolean executeWithEntityExclusiveAccess(T entityId, ProtectedCode protectedCode, long waitLockTimeout, TimeUnit timeUnit) throws InterruptedException {
         if (!acquireEntityLock(entityId, waitLockTimeout, timeUnit)) {
             //could not acquire lock
             return false;
@@ -63,7 +62,7 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
     }
 
     @Override
-    public void executeWithGlobalExclusiveAccess(Runnable protectedCode) throws InterruptedException {
+    public void executeWithGlobalExclusiveAccess(ProtectedCode protectedCode) throws InterruptedException {
         acquireGlobalLock();
 
         try {
@@ -74,7 +73,7 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
     }
 
     @Override
-    public boolean executeWithGlobalExclusiveAccess(Runnable protectedCode, long waitLockTimeout, TimeUnit timeUnit) throws InterruptedException {
+    public boolean executeWithGlobalExclusiveAccess(ProtectedCode protectedCode, long waitLockTimeout, TimeUnit timeUnit) throws InterruptedException {
         if (!acquireGlobalLock(waitLockTimeout, timeUnit)) {
             return false;
         }
@@ -88,22 +87,53 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
     }
 
     private void acquireEntityLock(T entityId) throws DeadLockPreventionException {
-        if (shouldEscalateToGlobalLock()) {
-            escalateToGlobalLock();
+        if (currentThreadHasLockedManyEntities()) {
+            escalateCurrentThreadLocks(LockEscalation.escalateDueToMultipleEntityLock());
             return;
         }
 
-        long currentThreadId = Thread.currentThread().getId();
+        checkForDeadLockAndUpdateGraph(Thread.currentThread().getId(), entityId);
 
-        EntityDeadLockChecker.checkForDeadLock(threadEntityGraph, currentThreadId, entityId);
-
-        threadEntityGraph.addThreadEntityAssociation(currentThreadId, entityId);
-
-        globalReadLock.lock();
         entityLock.lock(entityId);
+        globalReadLock.lock();
     }
 
-    private void escalateToGlobalLock() {
+    private synchronized void checkForDeadLockAndUpdateGraph(long currentThreadId, T entityId) {
+        EntityDeadLockChecker.checkForDeadLock(threadEntityGraph, currentThreadId, entityId);
+        threadEntityGraph.addThreadEntityAssociation(currentThreadId, entityId);
+    }
+
+    private boolean acquireEntityLock(T entityId, long timeoutLock, TimeUnit timeUnit) throws InterruptedException {
+        if (currentThreadHasLockedManyEntities()) {
+            return escalateCurrentThreadWithTimeout(timeoutLock, timeUnit, LockEscalation.escalateDueToMultipleEntityLock());
+        }
+
+        long t0 = System.nanoTime();
+
+        boolean locked = entityLock.tryLock(entityId, timeoutLock, timeUnit);
+
+        if (!locked) {
+            return false;
+        }
+
+        long elapsedNanos = System.nanoTime() - t0;
+        long remainingWaitingTime = getRemainingNanos(timeUnit.toNanos(timeoutLock), elapsedNanos);
+
+        locked = globalReadLock.tryLock(remainingWaitingTime, TimeUnit.NANOSECONDS);
+
+        if (locked) {
+            threadEntityGraph.addThreadEntityAssociation(Thread.currentThread().getId(), entityId);
+        }
+
+        return locked;
+    }
+
+    private void escalateCurrentThreadLocks(LockEscalation lockEscalation) {
+        if (currentThreadLockIsEscalated()) {
+            globalWriteLock.lock();
+            updateCurrentThreadEscalation(lockEscalation);
+            return;
+        }
         //used by escalatingThreadsCondition this count forces any write lock waiting while this read lock is escalated
         escalatingThreadsCount.incrementAndGet();
 
@@ -113,11 +143,17 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
 
         //If this Thread current protected code is a sub-protected code, parent protected code(s) are escalated as well
         escalateParentProtectedCodes();
-
-        threadIsEscalated.set(true);
+        currentThreadLockEscalation.set(lockEscalation);
+        finishGlobalEscalation();
     }
 
-    private boolean escalateToGlobalLockWithTimeout(long waitTimeoutForGlobalLock, TimeUnit timeUnit) throws InterruptedException {
+    private boolean escalateCurrentThreadWithTimeout(long waitTimeoutForGlobalLock, TimeUnit timeUnit, LockEscalation lockEscalation) throws InterruptedException {
+        if (currentThreadLockIsEscalated()) {
+            globalWriteLock.lock();
+            updateCurrentThreadEscalation(lockEscalation);
+            return true;
+        }
+
         //used by escalatingThreadsCondition this count forces any write lock waiting while this read lock is escalated
         escalatingThreadsCount.incrementAndGet();
 
@@ -127,83 +163,31 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
         if (!locked) {
             //escalation timed out so re-acquire previous lock level
             reAcquireAllReadLocks();
+            finishGlobalEscalation();
             return false;
         }
 
         //If this Thread current protected code is a sub-protected code, parent protected code(s) are escalated as well
         escalateParentProtectedCodes();
+        currentThreadLockEscalation.set(lockEscalation);
+        finishGlobalEscalation();
 
-        threadIsEscalated.set(true);
         return true;
     }
 
-    private void escalateParentProtectedCodes() {
-        int holdingEntities = threadEntityGraph.getAssociatedEntities(Thread.currentThread().getId()).size();
-        IntStream.range(0, holdingEntities).forEach(i -> globalWriteLock.lock());
-    }
-
-    private void releaseAllReadLocks() {
-        long currentThread = Thread.currentThread().getId();
-        IntStream.range(0, threadEntityGraph.getAssociatedEntities(currentThread).size())
-                .forEach(i -> globalReadLock.unlock());
-    }
-
-    private void reAcquireAllReadLocks() {
-        long currentThread = Thread.currentThread().getId();
-        IntStream.range(0, threadEntityGraph.getAssociatedEntities(currentThread).size())
-                .forEach(i -> globalReadLock.lock());
-    }
-
-    private boolean lockIsEscalated() {
-        return threadIsEscalated.get();
-    }
-
-    private boolean shouldEscalateToGlobalLock() {
-        long currentThreadId = Thread.currentThread().getId();
-        return escalationThreshold != NO_ESCALATION_VALUE
-                && threadEntityGraph.getAssociatedEntities(currentThreadId).size() > (escalationThreshold - 1);
-    }
-
-    private boolean acquireEntityLock(T entityId, long timeoutLock, TimeUnit timeUnit) throws InterruptedException {
-        if (shouldEscalateToGlobalLock()) {
-            return escalateToGlobalLockWithTimeout(timeoutLock, timeUnit);
-        }
-
-        long t0 = System.nanoTime();
-
-        boolean locked = globalReadLock.tryLock(timeoutLock, timeUnit);
-        if (!locked) {
-            return false;
-        }
-
-        long elapsedNanos = System.nanoTime() - t0;
-        long remainingWaitingTime = getRemainingNanos(timeUnit.toNanos(timeoutLock), elapsedNanos);
-
-        locked = entityLock.tryLock(entityId, remainingWaitingTime, TimeUnit.NANOSECONDS);
-
-        if (locked) {
-            threadEntityGraph.addThreadEntityAssociation(Thread.currentThread().getId(), entityId);
-        }
-
-        return locked;
-    }
-
     private void releaseEntityLock(T entityId) {
-        if (lockIsEscalated()) {
-            if (globalWriteLock.getHoldCount() == 1) {
-                threadIsEscalated.remove();
-                escalatingThreadsCount.decrementAndGet();
-                escalatingThreadsCondition.signalAll();
-            }
-
+        boolean shouldReleaseGlobalWriteLock = currentThreadLockIsEscalated() && !currentThreadLockIsEscalatedTemporarily();
+        if (shouldReleaseGlobalWriteLock) {
+            //if was escalated, release write lock
             globalWriteLock.unlock();
 
-            releaseEntityLock(Thread.currentThread().getId(), entityId);
-
-            return;
+            if (globalWriteLock.getHoldCount() == 0) {
+                currentThreadLockEscalation.remove();
+            }
+        } else {
+            globalReadLock.unlock();
         }
 
-        globalReadLock.unlock();
         releaseEntityLock(Thread.currentThread().getId(), entityId);
     }
 
@@ -214,16 +198,17 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
         }
     }
 
-    private void releaseGlobalLock() {
-        globalWriteLock.unlock();
-
-        //read locks may have been unlocked to ensure reentrancy. Happens when the same thread has global read locks, and at the same time it acquires write lock
-        reAcquireAllReadLocks();
-    }
-
     private void acquireGlobalLock() throws InterruptedException {
-        if (!threadEntityGraph.getAssociatedEntities(Thread.currentThread().getId()).isEmpty()) {
-            releaseAllReadLocks();
+        if (currentThreadHasEntityAccess()) {
+            /*
+             If current thread already has entity access then it has a global read lock, temporarily escalate its global
+             read to write lock to ensure reentrancy, otherwise would deadlock as ReentrantReadWriteLock does not let to
+             upgrade from read to write lock.
+
+             De-escalation should happen when this current global write lock is unlocked
+             */
+            escalateCurrentThreadLocks(LockEscalation.temporaryEscalation());
+            return;
         }
 
         globalWriteLock.lock();
@@ -233,8 +218,15 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
     }
 
     private boolean acquireGlobalLock(long waitLockTimeout, TimeUnit timeUnit) throws InterruptedException {
-        if (!threadEntityGraph.getAssociatedEntities(Thread.currentThread().getId()).isEmpty()) {
-            releaseAllReadLocks();
+        if (currentThreadHasEntityAccess()) {
+             /*
+             If current thread already has entity access then it has a global read lock, temporarily escalate its global
+             read to write lock to ensure reentrancy, otherwise would deadlock as ReentrantReadWriteLock does not let to
+             upgrade from read to write lock.
+
+             De-escalation should happen once this current global write lock is unlocked
+             */
+            return escalateCurrentThreadWithTimeout(waitLockTimeout, timeUnit, LockEscalation.temporaryEscalation());
         }
 
         boolean locked = globalWriteLock.tryLock(waitLockTimeout, timeUnit);
@@ -249,10 +241,115 @@ public class ReentrantEntityLockerImpl<T> implements EntityLocker<T> {
         return true;
     }
 
+    private boolean currentThreadHasEntityAccess() {
+        return !threadEntityGraph.getAssociatedEntities(Thread.currentThread().getId()).isEmpty();
+    }
+
+    private void releaseGlobalLock() {
+        globalWriteLock.unlock();
+
+        if (currentThreadLockIsEscalatedTemporarily()) {
+            //parent read locks may have been escalated to ensure reentrancy. (ReentrantReadWrite lock does not let upgrade of locks)
+            deEscalateToReadLock();
+        }
+    }
+
+    private boolean currentThreadHasLockedManyEntities() {
+        long currentThreadId = Thread.currentThread().getId();
+        return escalationThreshold != NO_ESCALATION_VALUE
+                && threadEntityGraph.getAssociatedEntities(currentThreadId).size() > (escalationThreshold - 1);
+    }
+
+    private void updateCurrentThreadEscalation(LockEscalation newLockEscalation) {
+        boolean shouldOverride = currentThreadLockEscalation.get().isEscalatedTemporarily()
+                && newLockEscalation.isEscalated()
+                && !newLockEscalation.isEscalatedTemporarily();
+
+        if (shouldOverride) {
+            currentThreadLockEscalation.set(newLockEscalation);
+        }
+    }
+
+    private void escalateParentProtectedCodes() {
+        int holdingEntities = threadEntityGraph.getAssociatedEntities(Thread.currentThread().getId()).size();
+        IntStream.range(0, holdingEntities).forEach(i -> globalWriteLock.lock());
+    }
+
+    private void releaseAllReadLocks() {
+        long currentThread = Thread.currentThread().getId();
+        IntStream.range(0, threadEntityGraph.getAssociatedEntities(currentThread).size())
+                .forEach(i -> globalReadLock.unlock());
+    }
+
+    private void releaseAllWriteLocks() {
+        long currentThread = Thread.currentThread().getId();
+        IntStream.range(0, threadEntityGraph.getAssociatedEntities(currentThread).size())
+                .forEach(i -> globalWriteLock.unlock());
+    }
+
+    private void reAcquireAllReadLocks() {
+        long currentThread = Thread.currentThread().getId();
+        IntStream.range(0, threadEntityGraph.getAssociatedEntities(currentThread).size())
+                .forEach(i -> globalReadLock.lock());
+    }
+
+    private boolean currentThreadLockIsEscalated() {
+        return currentThreadLockEscalation.get().isEscalated();
+    }
+
+    private boolean currentThreadLockIsEscalatedTemporarily() {
+        return currentThreadLockEscalation.get().isEscalatedTemporarily();
+    }
+
+    private void deEscalateToReadLock() {
+        reAcquireAllReadLocks();
+        releaseAllWriteLocks();
+        currentThreadLockEscalation.remove();
+    }
+
+    private void finishGlobalEscalation() {
+        escalatingThreadsCount.decrementAndGet();
+        escalatingThreadsCondition.signalAll();
+    }
+
     /*
      * Returns remaining or zero if negative
      */
     private long getRemainingNanos(long totalNanos, long subtractNanos) {
         return Math.max(totalNanos - subtractNanos, 0);
+    }
+
+    /**
+     * Has information on whether current thread lock has been escalated or not
+     * And in case it is escalated, if it is a temporary escalation or not
+     */
+    private static class LockEscalation {
+        private final boolean isEscalated;
+        private final boolean isTemporary;
+
+        private LockEscalation(boolean isEscalated, boolean isTemporary) {
+            this.isEscalated = isEscalated;
+            this.isTemporary = isTemporary;
+        }
+
+        private static LockEscalation escalateDueToMultipleEntityLock() {
+            return new LockEscalation(true, false);
+        }
+
+        private static LockEscalation temporaryEscalation() {
+            return new LockEscalation(true, true);
+        }
+
+        private static LockEscalation noEscalation() {
+            return new LockEscalation(false, false);
+        }
+
+        private boolean isEscalated() {
+            return isEscalated;
+        }
+
+        private boolean isEscalatedTemporarily() {
+            return isEscalated && isTemporary;
+        }
     }
 }

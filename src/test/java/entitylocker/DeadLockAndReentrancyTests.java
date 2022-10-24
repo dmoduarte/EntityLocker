@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DeadLockAndReentrancyTests {
-    private static final Runnable NO_OP = () -> {
+    private static final ProtectedCode NO_OP = () -> {
     };
 
     private EntityLocker<String> entityLocker;
@@ -185,9 +185,9 @@ class DeadLockAndReentrancyTests {
         }
     }
 
-    private void executeWithGlobalExclusiveAccess(Runnable runnable) {
+    private void executeWithGlobalExclusiveAccess(ProtectedCode protectedCode) {
         try {
-            entityLocker.executeWithGlobalExclusiveAccess(runnable);
+            entityLocker.executeWithGlobalExclusiveAccess(protectedCode);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

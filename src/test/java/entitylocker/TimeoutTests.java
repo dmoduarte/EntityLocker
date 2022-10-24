@@ -5,7 +5,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -28,7 +27,7 @@ class TimeoutTests {
         CountDownLatch latch = new CountDownLatch(numberOfThreads);
         AtomicBoolean allAcquiredTheLock = new AtomicBoolean(true);
 
-        Runnable protectedSleepyCode = () -> {
+        ProtectedCode protectedSleepyCode = () -> {
             try {
                 Thread.sleep(100);
             } catch (InterruptedException e) {
@@ -67,7 +66,7 @@ class TimeoutTests {
         CountDownLatch latch = new CountDownLatch(numberOfThreads);
         AtomicBoolean allAcquiredTheLock = new AtomicBoolean(true);
 
-        Runnable protectedSleepyCode = () -> {
+        ProtectedCode protectedSleepyCode = () -> {
             try {
                 Thread.sleep(100);
             } catch (InterruptedException e) {
@@ -103,7 +102,7 @@ class TimeoutTests {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicBoolean acquiredLock = new AtomicBoolean(true);
 
-        Runnable protectedSleepyCode = () -> {
+        ProtectedCode protectedSleepyCode = () -> {
             try {
                 Thread.sleep(100);
             } catch (InterruptedException e) {
@@ -137,9 +136,9 @@ class TimeoutTests {
         assertFalse(acquiredLock.get());
     }
 
-    private void executeWithGlobalExclusiveAccess(Runnable runnable) {
+    private void executeWithGlobalExclusiveAccess(ProtectedCode protectedCode) {
         try {
-            entityLocker.executeWithGlobalExclusiveAccess(runnable);
+            entityLocker.executeWithGlobalExclusiveAccess(protectedCode);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

@@ -2,12 +2,10 @@ package entitylocker;
 
 import entitylocker.exceptions.DeadLockPreventionException;
 import java.util.HashSet;
-import java.util.LinkedList;
-import java.util.Queue;
 import java.util.Set;
 
 /**
- * Util class to check for possible deadlocks
+ * Util class to check for possible deadlocks in the {@link EntityLocker}
  */
 class EntityDeadLockChecker {
     private EntityDeadLockChecker() {
@@ -15,14 +13,7 @@ class EntityDeadLockChecker {
     }
 
     /**
-     * Checks for possible deadlocks by traversing the {@link ThreadEntityGraph}, if a cycle is detected then there is
-     * the probability of occurring a deadlock.
-     * <p>
-     * Starting at the node of the acquiringThread it fetches the current associated entities and traverses each
-     * entity node to get their related threads.
-     * <p>
-     * This is done recursively until we have no more entity nodes to check or if we reach to an entity equal to the one
-     * we are trying to acquire (entityIdToAcquire). If the latter happens then there is a deadlock.
+     * Checks for possible deadlocks
      *
      * @param threadEntityGraph {@link ThreadEntityGraph}
      * @param acquiringThread   acquiringThread
@@ -35,34 +26,29 @@ class EntityDeadLockChecker {
             long acquiringThread,
             T entityIdToAcquire
     ) throws DeadLockPreventionException {
-        Set<T> entitiesAcquiredByThread = threadEntityGraph.getAssociatedEntities(acquiringThread);
+        Set<T> entitiesLockedByCurrentThread = threadEntityGraph.getAssociatedEntities(acquiringThread);
 
-        if (entitiesAcquiredByThread.isEmpty()) {
+        if (entitiesLockedByCurrentThread.isEmpty()) {
             return;
         }
 
-        Queue<T> entityQueue = new LinkedList<>(entitiesAcquiredByThread);
         Set<Long> visitedThreads = new HashSet<>();
         visitedThreads.add(acquiringThread);
 
-        while (!entityQueue.isEmpty()) {
-            T currentEntityId = entityQueue.poll();
+        Set<Long> threadsAssociatedWithEntity = threadEntityGraph.getAssociatedThreads(entityIdToAcquire);
 
-            Set<Long> associatedThreads = threadEntityGraph.getAssociatedThreads(currentEntityId);
-
-            for (Long currentThreadId : associatedThreads) {
-
-                if (currentEntityId == entityIdToAcquire && currentThreadId != acquiringThread) {
-                    throw new DeadLockPreventionException();
-                }
-
-                if (!visitedThreads.contains(currentThreadId)) {
-                    entityQueue.addAll(threadEntityGraph.getAssociatedEntities(currentThreadId));
-                }
-
-                visitedThreads.add(currentThreadId);
+        for (Long thread : threadsAssociatedWithEntity) {
+            if (visitedThreads.contains(thread)) {
+                continue;
             }
 
+            boolean threadIsDeadLocked = threadEntityGraph.getAssociatedEntities(thread)
+                    .stream()
+                    .anyMatch(entitiesLockedByCurrentThread::contains);
+
+            if (threadIsDeadLocked) {
+                throw new DeadLockPreventionException();
+            }
         }
     }
 
